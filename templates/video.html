@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Real-time Object Detection</title>
+    <style>
+      /* CSS for the container holding the video and detected objects */
+      .container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        background-color: #f1f1f1;
+        font-family: Arial, sans-serif;
+      }
+
+      /* CSS for the video feed */
+      .video-feed {
+        width: 640px;
+        height: 480px;
+        border: 1px solid #ccc;
+        margin-bottom: 20px;
+      }
+
+      /* CSS for the detected objects */
+      .objects {
+        width: 640px;
+        padding: 10px;
+        background-color: #fff;
+      }
+
+      /* CSS for the detected object labels */
+      .label {
+        margin-bottom: 5px;
+      }
+
+      /* CSS for the detected object confidence */
+      .confidence {
+        color: #888;
+      }
+    </style>
+  </head>
+  <div class="container">
+    <div class="video-feed">
+      <img
+        id="video"
+        src="{{ url_for('video_feed') }}"
+        width="100%"
+        height="100%"
+        alt="Video Feed"
+      />
+    </div>
+    <ul id="object-list"></ul>
+  </div>
+
+  <script>
+    // JavaScript for updating the detected objects
+    const objectList = document.getElementById("object-list");
+
+    const eventSource = new EventSource("{{ url_for('video_feed') }}");
+    eventSource.onmessage = function (event) {
+      const data = JSON.parse(event.data);
+      objectList.innerHTML = "";
+
+      data.forEach((object) => {
+        const listItem = document.createElement("li");
+        listItem.innerHTML = `
+                <div class="label">${object.label}</div>
+                <div class="confidence">Confidence: ${object.confidence}</div>
+                <div class="label-name">Label Name: ${object.label_name}</div>  // Add this line
+            `;
+        objectList.appendChild(listItem);
+      });
+    };
+  </script>
+</html>
