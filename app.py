@@ -4,6 +4,7 @@ from markupsafe import escape
 from flask import request
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from pymongo import MongoClient
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -18,6 +19,7 @@ from datetime import timedelta,datetime
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+
 
 from flask_jwt_extended import create_access_token
 from flask_jwt_extended import current_user
@@ -47,8 +49,8 @@ app.config['MAIL_SERVER'] ='smtp.gmail.com'
 
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = "riyanbayu0102.app@gmail.com"
-app.config['MAIL_PASSWORD'] = "sjalypaklkuawaoz"
+app.config['MAIL_USERNAME'] = "riyanbayu0102@gmail.com"
+app.config['MAIL_PASSWORD'] = "wcfxyxojmhutvccl"
 
 db = SQLAlchemy(model_class=Base)
 db.init_app(app)
@@ -72,6 +74,8 @@ class User(db.Model): #User class inherit Model class
     updated_at: Mapped[str]
     is_verified: Mapped[bool] = mapped_column(default=False)
     verification_token: Mapped[str] = mapped_column(nullable=True)
+    reset_token: Mapped[str] = mapped_column(nullable=True)
+    reset_token_expiry: Mapped[datetime] = mapped_column(nullable=True)
 
 class ApiKey(db.Model): #User class inherit Model class
     api_key: Mapped[str] = mapped_column(primary_key=True)
@@ -245,63 +249,92 @@ def confirm_email(token):
 def send_email(to, subject, body):
     msg = Message(subject, recipients=[to], body=body)
     mail.send(msg)
-# @app.post('/signup')
-# def signup():
-#     name = request.form.get("name")
-#     email = request.form.get("email")
-#     password = request.form.get("password")
-#     # re_password = request.form.get("re_password")
+
+
+@app.post("/signin")
+def signin():
+    email = request.form.get("email")
+    password = request.form.get("password")
     
-#     created_at= datetime.now()
-#     updated_at= datetime.now()
+    # Fetch the user by email
+    user = db.session.execute(
+        db.select(User).filter_by(email=email)
+    ).scalar_one()
     
-#     # Memeriksa apakah password sama dengan re_password
-#     # if password != re_password:
-#     #     return {
-#     #         "message" : "Password tidak sama!"
-#     #     }, 400
+    if not user:
+        return jsonify({"message": "Email or password is incorrect!"}), 400
+
+    # Verify the user's password
+    try:
+        PasswordHasher().verify(user.password, password)
+    except:
+        return jsonify({"message": "Email or password is incorrect!"}), 400
     
-#     # Memeriksa apakah email terisi
-#     if not email:
-#         return {
-#             "message" : "Email harus diisi"
-#         }, 400
-        
-#     # Mengecek apakah email sudah terdaftar sebelumnya
-#     existing_user = User.query.filter_by(email=email).first()
-#     if existing_user:
-#         return {
-#             "error" : True,
-#             "message": "Email sudah terdaftar. Silakan gunakan email lain."
-#         }, 400
-        
-#     # Menghash password menggunakan Argon2
-#     hashed_password = PasswordHasher().hash(password)
+    # Check if the user's email is verified
+    if not user.is_verified:
+        return jsonify({"message": "Please verify your email before logging in."}), 403
     
-#     # Membuat objek User dengan menggunakan properti yang sesuai
-#     # Pastikan properti ini sesuai dengan definisi model
-#     new_user = User(
-#         email=email,
-#         name=name,
-#         password=hashed_password,  
-#         created_at=created_at,
-#         updated_at=updated_at
-#     )
-#     db.session.add(new_user)
-#     db.session.commit()
+    # Generate JWT token
+    access_token = create_access_token(identity=user.id)
     
-#     # res = {
-#     #     "id": new_user.id,
-#     #     "name" : name,
-#     #     "email" : email,
-#     # }
-#     return {
-#         # "data" : res,
-#         "message" : "Sukses melakukan registrasi",
-#         "error": False
-        
-#     },201   
-        
+    return jsonify({"access_token": access_token}), 200
+
+
+@app.route('/forgot_password', methods=['POST'])
+def forgot_password():
+    data = request.form
+    email = data.get('email')
+    
+    user = User.query.filter_by(email=email).first()
+    
+    if not user:
+        return jsonify({"message": "Email not found"}), 404
+    
+    reset_token = secrets.token_urlsafe(32)
+    user.reset_token = reset_token
+    user.reset_token_expiry = datetime.utcnow() + timedelta(hours=1)
+    db.session.commit()
+    
+    reset_url = url_for('reset_password_form', token=reset_token, _external=True)
+    msg = Message(subject="Reset Your Password", sender="noreply@app.com", recipients=[email])
+    msg.html = render_template("reset-password.html", reset_url=reset_url)
+    mail.send(msg)
+    
+    return jsonify({"message": "Password reset link has been sent to your email"}), 200
+
+@app.route('/reset_password/<token>', methods=['GET'])
+def reset_password_form(token):
+    user = User.query.filter_by(reset_token=token).first()
+    
+    if not user or user.reset_token_expiry < datetime.utcnow():
+        return jsonify({"message": "Token is invalid or expired"}), 400
+    
+    return render_template('reset-password-form.html', token=token)
+
+@app.route('/reset_password/<token>', methods=['POST'])
+def reset_password(token):
+    user = User.query.filter_by(reset_token=token).first()
+    
+    if not user or user.reset_token_expiry < datetime.utcnow():
+        return jsonify({"message": "Token is invalid or expired"}), 400
+    
+    data = request.form
+    new_password = data.get('new_password')
+    confirm_password = data.get('confirm_password')
+    
+    if new_password != confirm_password:
+        return jsonify({"message": "Passwords do not match"}), 400
+    
+    hashed_password = PasswordHasher().hash(new_password)
+    
+    user.password = hashed_password
+    user.reset_token = None
+    user.reset_token_expiry = None
+    user.updated_at = datetime.utcnow()
+    db.session.commit()
+    
+    return jsonify({"message": "Password has been reset successfully"}), 200
+       
        
 
 @app.get('/protected')
@@ -379,43 +412,154 @@ def edit_profile():
         "message": "Profile updated successfully",
     }), 200
 
+mongo_client = MongoClient('mongodb://localhost:27017/')
+mongo_db = mongo_client['latihan']
+mongo_collection = mongo_db['bayu']
 
-@app.post("/signin")
-def signin():
-    # #Mengambil the Authorization header
-    # base64Str = request.headers.get('Authorization')
-    # print("base64 :", base64Str)
-    # base64Str = base64Str[6:] # hapus "Basic" string
+@app.route('/')
+def index():
+    return render_template('video.html')
+
+def detect_objects():
+    model = YOLO('model/best.pt')
+    cap = cv2.VideoCapture(0)
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+            results = model(frame)
+            pred_boxes = results[0].boxes.xyxy.cpu().numpy()
+            pred_scores = results[0].boxes.conf.cpu().numpy()
+            pred_classes = results[0].boxes.cls.cpu().numpy()
+            for i, box in enumerate(pred_boxes):
+                x1, y1, x2, y2 = map(int, box)
+                label = f'{model.names[int(pred_classes[i])]} {pred_scores[i]:.2f}'
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+                detection = {
+                    "class": model.names[int(pred_classes[i])],
+                    "timestamp": datetime.now(),
+                    "day": datetime.now().day,
+                    "month": datetime.now().month,
+                    "year": datetime.now().year
+                }
+                try:
+                    mongo_collection.insert_one(detection)
+                    print(f'Detection saved to MongoDB: {detection}')
+                except Exception as e:
+                    print(f'Error saving detection to MongoDB: {e}')
+            ret, buffer = cv2.imencode('.jpg', frame)
+            if not ret:
+                continue
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+    finally:
+        cap.release()
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(detect_objects(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+if __name__ == '__main__':
+    #   app.run(debug=True)
+      app.run(host='192.168.202.81', port='5000', debug=True)
+
+# @app.post('/signup')
+# def signup():
+#     name = request.form.get("name")
+#     email = request.form.get("email")
+#     password = request.form.get("password")
+#     # re_password = request.form.get("re_password")
     
-    # #Mulai Base64 Decode
-    # base64Bytes = base64Str.encode('ascii')
-    # messageBytes = base64.b64decode(base64Bytes)
-    # pair = messageBytes.decode('ascii')
-    # #Akhir Base64 Decode
+#     created_at= datetime.now()
+#     updated_at= datetime.now()
     
-    # email, password = pair.split(":")
+#     # Memeriksa apakah password sama dengan re_password
+#     # if password != re_password:
+#     #     return {
+#     #         "message" : "Password tidak sama!"
+#     #     }, 400
     
-    email = request.form.get("email")
-    password = request.form.get("password")
+#     # Memeriksa apakah email terisi
+#     if not email:
+#         return {
+#             "message" : "Email harus diisi"
+#         }, 400
+        
+#     # Mengecek apakah email sudah terdaftar sebelumnya
+#     existing_user = User.query.filter_by(email=email).first()
+#     if existing_user:
+#         return {
+#             "error" : True,
+#             "message": "Email sudah terdaftar. Silakan gunakan email lain."
+#         }, 400
+        
+#     # Menghash password menggunakan Argon2
+#     hashed_password = PasswordHasher().hash(password)
     
-    # Memanggil data email pada database
-    user = db.session.execute(
-        db.select(User)
-        .filter_by(email=email)
-    ).scalar_one()
+#     # Membuat objek User dengan menggunakan properti yang sesuai
+#     # Pastikan properti ini sesuai dengan definisi model
+#     new_user = User(
+#         email=email,
+#         name=name,
+#         password=hashed_password,  
+#         created_at=created_at,
+#         updated_at=updated_at
+#     )
+#     db.session.add(new_user)
+#     db.session.commit()
     
-    if not user or not PasswordHasher().verify(user.password, password):
-        return {
-            "message": "wrong password or email!"
-        },400
-    #End Authentication    
+#     # res = {
+#     #     "id": new_user.id,
+#     #     "name" : name,
+#     #     "email" : email,
+#     # }
+#     return {
+#         # "data" : res,
+#         "message" : "Sukses melakukan registrasi",
+#         "error": False
+        
+#     },201   
+ 
+
+# @app.post("/signin")
+# def signin():
+#     # #Mengambil the Authorization header
+#     # base64Str = request.headers.get('Authorization')
+#     # print("base64 :", base64Str)
+#     # base64Str = base64Str[6:] # hapus "Basic" string
     
-    #Start Generate JWT Token
-    access_token = create_access_token(identity=user.id)
-    #End Generate JWT Token
-    return {
-        "access_token" : access_token,
-    },200
+#     # #Mulai Base64 Decode
+#     # base64Bytes = base64Str.encode('ascii')
+#     # messageBytes = base64.b64decode(base64Bytes)
+#     # pair = messageBytes.decode('ascii')
+#     # #Akhir Base64 Decode
+    
+#     # email, password = pair.split(":")
+    
+#     email = request.form.get("email")
+#     password = request.form.get("password")
+    
+#     # Memanggil data email pada database
+#     user = db.session.execute(
+#         db.select(User)
+#         .filter_by(email=email)
+#     ).scalar_one()
+    
+#     if not user or not PasswordHasher().verify(user.password, password):
+#         return {
+#             "message": "wrong password or email!"
+#         },400
+#     #End Authentication    
+    
+#     #Start Generate JWT Token
+#     access_token = create_access_token(identity=user.id)
+#     #End Generate JWT Token
+#     return {
+#         "access_token" : access_token,
+#     },200
     
 # @app.get("/myprofile")
 # @jwt_required()
@@ -438,63 +582,6 @@ def signin():
 #         email=current_user.email,
 #           name=current_user.name,
 #     )
-
-@app.route('/')
-def index():
-    return render_template('video.html')
-
-def detect_objects():
-    # Load the YOLOv8 model with .pt weights
-    model = YOLO('model/best.pt')
-
-    # Open camera
-    cap = cv2.VideoCapture(0)
-
-    while True:
-        # Read frame from the camera
-        ret, frame = cap.read()
-
-        if ret:
-            frame = cv2.flip(frame, 1)
-
-            # Perform inference on the image
-            results = model(frame)
-
-            # Get detection results
-            pred_boxes = results[0].boxes.xyxy.cpu().numpy()
-            pred_scores = results[0].boxes.conf.cpu().numpy()
-            pred_classes = results[0].boxes.cls.cpu().numpy()
-
-            # Draw bounding boxes and labels on the frame
-            for i, box in enumerate(pred_boxes):
-                x1, y1, x2, y2 = map(int, box)
-                label = f'{model.names[int(pred_classes[i])]} {pred_scores[i]:.2f}'
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
-
-            # Encode the frame as JPEG
-            ret, buffer = cv2.imencode('.jpg', frame)
-
-            if not ret:
-                continue
-
-            # Yield the frame as a byte array
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-
-        else:
-            break
-
-    # Release the camera and clean up
-    cap.release()
-
-@app.route('/video_feed')
-def video_feed():
-    return Response(detect_objects(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-if __name__ == '__main__':
-    #  app.run(debug=True)
-     app.run(host='192.168.106.81', port='5000', debug=True)
 
 
 # @app.route("/")

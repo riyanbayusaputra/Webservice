@@ -293,3 +293,60 @@ def protected():
 #     return{
 #         "message" : "succes",
     # },200
+
+    # def detect_objects():
+    # # Load the YOLOv8 model with .pt weights
+    # model = YOLO('model/best.pt')
+
+    # # Open camera
+    # cap = cv2.VideoCapture(0)
+
+    # while True:
+    #     # Read frame from the camera
+    #     ret, frame = cap.read()
+
+    #     if ret:
+    #         frame = cv2.flip(frame, 1)
+
+    #         # Perform inference on the image
+    #         results = model(frame)
+
+    #         # Get detection results
+    #         pred_boxes = results[0].boxes.xyxy.cpu().numpy()
+    #         pred_scores = results[0].boxes.conf.cpu().numpy()
+    #         pred_classes = results[0].boxes.cls.cpu().numpy()
+
+    #         # Draw bounding boxes and labels on the frame
+    #         for i, box in enumerate(pred_boxes):
+    #             x1, y1, x2, y2 = map(int, box)
+    #             label = f'{model.names[int(pred_classes[i])]} {pred_scores[i]:.2f}'
+    #             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+    #             cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+
+    #             # Save detection to MongoDB
+    #             detection = {
+    #                 "class": model.names[int(pred_classes[i])],
+    #                 "score": float(pred_scores[i]),
+    #                 "box": [x1, y1, x2, y2],
+    #                 "timestamp": datetime.datetime.now(),
+    #                 "day": datetime.datetime.now().day,
+    #                 "month": datetime.datetime.now().month,
+    #                 "year": datetime.datetime.now().year
+    #             }
+    #             collection.insert_one(detection)
+
+    #         # Encode the frame as JPEG
+    #         ret, buffer = cv2.imencode('.jpg', frame)
+
+    #         if not ret:
+    #             continue
+
+    #         # Yield the frame as a byte array
+    #         yield (b'--frame\r\n'
+    #                b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+
+    #     else:
+    #         break
+
+    # # Release the camera and clean up
+    # cap.release()
