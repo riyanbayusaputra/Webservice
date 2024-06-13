@@ -20,7 +20,8 @@ from flask_jwt_extended import current_user
 from flask_jwt_extended import get_jwt_identity
 from flask_jwt_extended import jwt_required
 from flask_jwt_extended import JWTManager
-
+from ultralytics.solutions import object_counter
+import cv2
 
 
 class Base(DeclarativeBase):

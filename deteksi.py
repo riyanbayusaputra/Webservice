@@ -1,87 +1,68 @@
-# from flask import Flask, Response, render_template
-# from ultralytics import YOLO
-# import cv2
-# from pymongo import MongoClient
-# import datetime as dt
+from ultralytics import YOLO
+from ultralytics.solutions import object_counter
+import cv2
 
-# # Initialize Flask app
-# app = Flask(__name__)
+from pymongo import MongoClient
+import datetime
+from shapely.geometry import Point
 
-# # Setup MongoDB
-# client = MongoClient('mongodb://localhost:27017/')
-# db = client['coba']
-# collection = db['bayu']
 
-# @app.route('/')
-# def index():
-#     return render_template('video.html')
+# Setup MongoDB
+client = MongoClient('mongodb://localhost:27017/')
+db = client['object_counter_db']
+collection = db['detections']
 
-# def detect_objects():
-#     # Load the YOLOv8 model with .pt weights
-#     model = YOLO('model/best.pt')
+model = YOLO("model/best80.pt")
+region_of_interest = [(300, 20), (302, 680), (280, 680), (280, 20)]
+counter = object_counter.ObjectCounter()
+counter.set_args(view_img=True, reg_pts=region_of_interest, classes_names=model.names, draw_tracks=True)
 
-#     # Open camera
-#     cap = cv2.VideoCapture(0)
+def count_object():
+    cap = cv2.VideoCapture(0)
+    assert cap.isOpened()
+    tracked_ids = set()
+    while True:
+        success, im0 = cap.read()
+        if not success:
+            break
+        tracks = model.track(im0, persist=True, show=False)
+        im0 = counter.start_counting(im0, tracks)
+        
+        # Process tracks and save to MongoDB if crossing the ROI
+        if tracks[0].boxes.id is not None:
+            boxes = tracks[0].boxes.xyxy.cpu()
+            clss = tracks[0].boxes.cls.cpu().tolist()
+            track_ids = tracks[0].boxes.id.int().cpu().tolist()
 
-#     try:
-#         while True:
-#             # Read frame from the camera
-#             ret, frame = cap.read()
+            for box, track_id, cls in zip(boxes, track_ids, clss):
+                if track_id not in tracked_ids:
+                    prev_position = counter.track_history[track_id][-2] if len(counter.track_history[track_id]) > 1 else None
+                    current_position = (float((box[0] + box[2]) / 2), float((box[1] + box[3]) / 2))
+                    
+                    if len(region_of_interest) >= 3:
+                        is_inside = counter.counting_region.contains(Point(current_position))
+                        if prev_position and is_inside:
+                            tracked_ids.add(track_id)
+                            direction = "IN" if (box[0] - prev_position[0]) * (counter.counting_region.centroid.x - prev_position[0]) > 0 else "OUT"
+                            detection = {
+                                "class": counter.names[cls],
+                                "direction": direction,
+                                "timestamp": datetime.datetime.now()
+                            }
+                            collection.insert_one(detection)
 
-#             if not ret:
-#                 break
+        ret, buffer = cv2.imencode('.jpg', im0)
+        frame = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-#             frame = cv2.flip(frame, 1)
+    cap.release()
 
-#             # Perform inference on the image
-#             results = model(frame)
+    # Realtime Object Detection & Counting
+@app.route('/realtime')
+def index():
+    return render_template('index.html')
 
-#             # Get detection results
-#             pred_boxes = results[0].boxes.xyxy.cpu().numpy()
-#             pred_scores = results[0].boxes.conf.cpu().numpy()
-#             pred_classes = results[0].boxes.cls.cpu().numpy()
-
-#             # Draw bounding boxes and labels on the frame
-#             for i, box in enumerate(pred_boxes):
-#                 x1, y1, x2, y2 = map(int, box)
-#                 label = f'{model.names[int(pred_classes[i])]} {pred_scores[i]:.2f}'
-#                 cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-#                 cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
-
-#                 # Print debug information
-#                 print(f'Detected {label} at [{x1}, {y1}, {x2}, {y2}] with score {pred_scores[i]}')
-
-#                 # Save detection to MongoDB
-#                 detection = {
-#                     "class": model.names[int(pred_classes[i])],
-#                     "timestamp": dt.datetime.now(),
-#                     "day": dt.datetime.now().day,
-#                     "month": dt.datetime.now().month,
-#                     "year": dt.datetime.now().year
-#                 }
-#                 try:
-#                     collection.insert_one(detection)
-#                     print(f'Detection saved to MongoDB: {detection}')
-#                 except Exception as e:
-#                     print(f'Error saving detection to MongoDB: {e}')
-
-#             # Encode the frame as JPEG
-#             ret, buffer = cv2.imencode('.jpg', frame)
-
-#             if not ret:
-#                 continue
-
-#             # Yield the frame as a byte array
-#             yield (b'--frame\r\n'
-#                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-
-#     finally:
-#         # Release the camera
-#         cap.release()
-
-# @app.route('/video_feed')
-# def video_feed():
-#     return Response(detect_objects(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-# if __name__ == '__main__':
-#     app.run(debug=True)
+@app.route('/video_feed')
+def video_feed():
+    return Response(count_object(), mimetype='multipart/x-mixed-replace; boundary=frame')

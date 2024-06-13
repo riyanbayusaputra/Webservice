@@ -33,6 +33,10 @@ import cv2
 from ultralytics import YOLO
 from flask_mail import Mail, Message
 
+import logging
+
+logging.basicConfig(level=logging.ERROR)
+
 import secrets
 UPLOAD_FOLDER = 'static/uploads/'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
@@ -93,7 +97,40 @@ class ApiKey(db.Model): #User class inherit Model class
 def user_lookup_callback(_jwt_header, jwt_data):
     identity = jwt_data["sub"]
     return User.query.filter_by(id=identity).one_or_none()
+from sqlalchemy.orm.exc import NoResultFound
+def api_key_required(func):
+    @functools.wraps(func)
+    def check_api_key(*args, **kwargs):
+        try:
+            # Mendapatkan API key dari header permintaan
+            apiKey = request.headers.get('x-api-key')
+            if not apiKey:
+                print('No API key provided in the request headers.')
+                return jsonify({"message": "Please provide an API key"}), 400
 
+            print(f'Received API key: {apiKey}')
+            
+            # Mencari API key di database
+            try:
+                apiKey_record = ApiKey.query.filter_by(api_key=apiKey).one()
+                print(f'API key found in database: {apiKey_record.api_key}')
+            except NoResultFound:
+                print('API key is invalid. No matching record found in database.')
+                return jsonify({"message": "Please provide a correct API key"}), 400
+            
+            # Memastikan API key valid
+            if apiKey_record:
+                print('API key is valid.')
+                return func(*args, **kwargs)
+            else:
+                print('API key is invalid.')
+                return jsonify({"message": "Please provide a correct API key"}), 400
+
+        except Exception as e:
+            print(f'Error: {e}')
+            return jsonify({"message": f"An error occurred: {e}"}), 500
+    
+    return check_api_key
 @app.route("/user", methods=['GET','POST','PUT','DELETE'])
 @jwt_required()
 def user():
@@ -234,6 +271,92 @@ def signup():
     except Exception as e:
         print(e)
         return jsonify(message=f"Error {e}"), 500
+
+import traceback
+
+@app.post('/register')
+@api_key_required
+def register():
+    try:
+        data = request.form
+        name, email, password = data.get("name"), data.get("email"), data.get("password")
+
+        if not email:
+            return jsonify(message="Email harus diisi"), 400
+        if User.query.filter_by(email=email).first():
+            return jsonify(error=True, message="Email sudah terdaftar. Silakan gunakan email lain."), 400
+
+        hashed_password = PasswordHasher().hash(password)
+        verification_token = secrets.token_urlsafe(32)
+        
+        created_at = datetime.utcnow()
+        updated_at = created_at
+        
+        new_user = User(
+            name=name,
+            email=email,
+            
+            password=hashed_password,
+            created_at=created_at,
+            updated_at=updated_at,
+            verification_token=verification_token
+        )
+        
+        db.session.add(new_user)
+        db.session.commit()
+
+        confirmation_url = url_for('confirm_email', token=verification_token, _external=True)
+        msg = Message(subject="Verify your email", sender="noreply@app.com", recipients=[email])
+        msg.html = render_template("verify-email.html", confirmation_url=confirmation_url)
+
+        mail.send(msg)
+        
+        return jsonify(message="Sukses melakukan registrasi. Silakan cek email untuk konfirmasi.", error=False), 201
+    except Exception as e:
+        # Print error to console
+        print("Error during user registration:")
+        traceback.print_exc()  # This will print the full traceback to the console
+        
+        return jsonify(message=f"Error: {str(e)}"), 500
+
+
+@app.post("/login")
+def login():
+    
+    #catch the Authorization header
+    base64Str = request.headers.get('Authorization')
+    base64Str = base64Str[6:] # hapus "Basic" string
+    
+    #Mulai Base64 Decode
+    base64Bytes = base64Str.encode('ascii')
+    messageBytes = base64.b64decode(base64Bytes)
+    pair = messageBytes.decode('ascii')
+    #Akhir Base64 Decode
+    
+    email, password = pair.split(":")
+    # Memanggil data email pada database
+    user = db.session.execute(
+        db.select(User)
+        .filter_by(email=email)
+    ).scalar_one()
+    
+    try:
+        PasswordHasher().verify(user.password, password)
+    except:
+        return jsonify({"message": "Email or password is incorrect!"}), 400
+    
+    # Check if the user's email is verified
+    if not user.is_verified:
+        return jsonify({"message": "Please verify your email before logging in."}), 403
+    #End Authentication    
+    #Start Generate JWT Token
+    access_token = create_access_token(identity=user.id)
+    #End Generate JWT Token
+    return {
+        "access_token" : access_token,
+    },200
+
+
 
 @app.route('/confirm_email/<token>')
 def confirm_email(token):
@@ -464,7 +587,7 @@ def video_feed():
 
 if __name__ == '__main__':
     #   app.run(debug=True)
-      app.run(host='192.168.202.81', port='5000', debug=True)
+      app.run(host='192.168.126.81', port='5000', debug=True)
 
 # @app.post('/signup')
 # def signup():
